@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1020" />
+    <meta name="description" content="比较不同网站的出口 IP 和连接状态，检查 VPN、代理的分流规则。" />
+    <title>网站分流测试 · 公开版</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1020'/%3E%3Cpath d='M13 32h15m8 0h15M27 25l8 7-8 7' fill='none' stroke='%234ad9cf' stroke-linecap='round' stroke-linejoin='round' stroke-width='5'/%3E%3Ccircle cx='49' cy='32' r='5' fill='%237da7ff'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body data-hosted="true">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-icon" aria-hidden="true">↗</span
+          ><span>ROUTE<span class="brand-accent">/</span>CHECK</span
+          ><span class="brand-caption">公开版</span>
+        </div>
+        <a
+          class="source-link"
+          href="https://ip.skk.moe/split-tunnel"
+          target="_blank"
+          rel="noopener noreferrer"
+          >参考网站 <span aria-hidden="true">↗</span></a
+        >
+      </header>
+
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <div class="eyebrow">
+            <span class="eyebrow-line"></span> NETWORK DIAGNOSTICS <span class="version">/ 01</span>
+          </div>
+          <div class="intro-grid">
+            <div>
+              <h1 id="page-title">网站分流测试<span class="title-dot">.</span></h1>
+              <p class="lead">比较不同站点的出口 IP 和连接状态。</p>
+            </div>
+            <div class="mode-card" role="group" aria-labelledby="mode-title">
+              <div class="mode-head">
+                <span id="mode-title">检测从哪里发起</span><span class="mode-icon" aria-hidden="true">◎</span>
+              </div>
+              <div class="segmented">
+                <label><input type="radio" name="mode" value="local" checked /><span>本机网络</span></label>
+                <label><input type="radio" name="mode" value="browser" /><span>当前浏览器</span></label>
+              </div>
+              <p id="mode-note" class="mode-note">请求由本地服务发起，线路取决于系统代理和 VPN 设置。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="status-strip" aria-label="检测概况">
+          <div class="status-primary">
+            <span class="pulse" aria-hidden="true"></span><span id="run-state">准备检测</span>
+          </div>
+          <div class="status-metrics">
+            <div><strong id="count-ok">0</strong><span>获取 IP</span></div>
+            <div><strong id="count-responded">0</strong><span>官网有响应</span></div>
+            <div><strong id="count-unsupported">0</strong><span>不支持读取</span></div>
+            <div><strong id="count-error">0</strong><span>连接失败</span></div>
+          </div>
+          <div class="status-time" id="last-run">尚未检测</div>
+        </section>
+
+        <section class="workspace" aria-labelledby="results-title">
+          <div class="workspace-head">
+            <div>
+              <div class="section-index">01 / 站点列表</div>
+              <h2 id="results-title">检测结果 <span id="target-total" class="heading-count"></span></h2>
+            </div>
+            <div class="head-actions">
+              <button
+                class="secondary-button"
+                id="add-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="add-panel"
+              >
+                <span aria-hidden="true">＋</span> 添加站点
+              </button>
+              <button class="primary-button" id="run-all" type="button">
+                <span class="refresh-icon" aria-hidden="true">↻</span> 重新检测全部
+              </button>
+            </div>
+          </div>
+
+          <form id="add-panel" class="add-panel" hidden>
+            <div class="form-heading">
+              <h3>添加检测目标</h3>
+              <p>获取出口 IP 需要目标提供 IP 回显接口。</p>
+            </div>
+            <div class="form-grid">
+              <label
+                >显示名称<input name="name" type="text" maxlength="40" placeholder="例如：我的网站"
+              /></label>
+              <label
+                >目标域名<input
+                  name="domain"
+                  type="text"
+                  required
+                  maxlength="253"
+                  placeholder="example.com"
+                  autocomplete="off"
+                  spellcheck="false"
+              /></label>
+              <label
+                >检测方式<select name="method" id="custom-method">
+                  <option value="trace">Cloudflare Trace</option>
+                  <option value="echo">IP 回显接口</option>
+                  <option value="site">官网可达性（无出口 IP）</option>
+                </select></label
+              >
+              <label
+                >接口路径<input
+                  name="path"
+                  id="custom-path"
+                  type="text"
+                  maxlength="512"
+                  value="/cdn-cgi/trace"
+                  placeholder="/cdn-cgi/trace"
+                  spellcheck="false"
+              /></label>
+            </div>
+            <div class="form-foot">
+              <span id="form-error" role="alert"></span
+              ><button class="primary-button" type="submit">添加并检测</button>
+            </div>
+          </form>
+
+          <p id="storage-note" class="storage-note" role="status" hidden>
+            浏览器无法保存自定义站点，刷新后更改会丢失。
+          </p>
+
+          <div class="toolbar">
+            <div class="filters" id="filters" aria-label="筛选站点"></div>
+            <label class="search-field"
+              ><span class="search-icon" aria-hidden="true">⌕</span><span class="sr-only">搜索站点</span
+              ><input id="search" type="search" placeholder="搜索站点或 IP" autocomplete="off"
+            /></label>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">网站 / 域名</th>
+                  <th scope="col">类型</th>
+                  <th scope="col">出口 IP</th>
+                  <th scope="col">位置 / 状态</th>
+                  <th scope="col" class="action-col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="results"></tbody>
+            </table>
+            <p id="empty-state" class="empty-state" hidden>没有匹配的站点。</p>
+          </div>
+        </section>
+
+        <aside class="explanation" aria-labelledby="about-title">
+          <div class="explanation-number">02 / 说明</div>
+          <div>
+            <h2 id="about-title">如何理解结果</h2>
+            <p>
+              <strong>获取 IP</strong>：目标接口返回的出口地址。<strong>官网有响应</strong>：仅确认 HTTPS
+              响应；游戏项检测官网。<strong>不支持读取</strong>：接口没有提供有效 IP。
+            </p>
+            <p>
+              跨域限制可能导致浏览器无法读取结果，可点“浏览器核对”查看原始响应。缺少位置时，已测得的 IP
+              会发送给 ipwho.is 查询；位置仅供参考。
+            </p>
+            <details class="route-guide">
+              <summary>如何核对实际代理节点？</summary>
+              <p>
+                在使用代理的设备上点“浏览器核对”，再复制域名到 Loon
+                等客户端的请求记录中，查看刚才连接的规则和节点。游戏对局需查看游戏运行时的连接记录。
+              </p>
+            </details>
+          </div>
+        </aside>
+      </main>
+      <footer><span>ROUTE/CHECK · 浏览器直接检测</span><span>结果仅保留在当前页面</span></footer>
+    </div>
+  </body>
+</html>
