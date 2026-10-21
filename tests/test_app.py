@@ -276,5 +276,10 @@ class HTTPTests(unittest.TestCase):
                 handler.assert_called_once_with(payload if function == "probe" else payload["ip"])
 
 
+class TlsTests(unittest.TestCase):
+    def test_ssl_context_has_trusted_ca_certificates(self):
+        self.assertTrue(app.SSL_CONTEXT.get_ca_certs())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,47 @@ GEO_CACHE = {}
 GEO_CACHE_LOCK = threading.Lock()
 
 
+def build_ssl_context():
+    """Return an SSL context with at least one trusted CA bundle.
+
+    python.org builds on macOS often ship with an empty default verify path
+    until "Install Certificates.command" is run. Prefer certifi when it is
+    installed, then fall back to the common system bundles, so local probing
+    still works out of the box.
+    """
+    context = ssl.create_default_context()
+    if context.get_ca_certs():
+        return context
+    candidates = []
+    try:
+        import certifi
+
+        candidates.append(certifi.where())
+    except ImportError:
+        pass
+    candidates.extend(
+        (
+            "/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/usr/local/etc/openssl/cert.pem",
+            "/opt/homebrew/etc/openssl@3/cert.pem",
+        )
+    )
+    for candidate in dict.fromkeys(candidates):
+        if not Path(candidate).is_file():
+            continue
+        try:
+            context.load_verify_locations(cafile=candidate)
+        except (ssl.SSLError, OSError):
+            continue
+        if context.get_ca_certs():
+            break
+    return context
+
+
+SSL_CONTEXT = build_ssl_context()
+
+
 def valid_ip(value):
     if not isinstance(value, str) or "%" in value:
         return None
@@ -71,7 +112,9 @@ class SameHostRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-OPENER = urllib.request.build_opener(SameHostRedirect())
+OPENER = urllib.request.build_opener(
+    SameHostRedirect(), urllib.request.HTTPSHandler(context=SSL_CONTEXT)
+)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -79,7 +122,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-SITE_OPENER = urllib.request.build_opener(NoRedirect())
+SITE_OPENER = urllib.request.build_opener(
+    NoRedirect(), urllib.request.HTTPSHandler(context=SSL_CONTEXT)
+)
 
 
 def site_response(code, started):
@@ -178,7 +223,7 @@ def lookup_geo(value):
         headers={"User-Agent": "SplitTunnelLab/1.1", "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=6) as response:
+        with urllib.request.urlopen(request, timeout=6, context=SSL_CONTEXT) as response:
             data = json.loads(response.read(8192))
         if isinstance(data, dict) and data.get("success") is True and valid_ip(data.get("ip")) == ip:
             result = {
@@ -267,8 +312,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="本地网站分流测试")
     parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
+    parser.add_argument("--port", type=int, default=0, help="监听端口；默认使用随机空闲端口")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    if not 0 <= args.port <= 65535:
+        parser.error("--port 须在 0-65535 之间")
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as error:
+        parser.error(f"无法监听 127.0.0.1:{args.port}：{error}")
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"本地网站分流测试已启动：{url}", flush=True)
     print("按 Ctrl+C 停止。", flush=True)

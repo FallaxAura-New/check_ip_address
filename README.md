@@ -4,16 +4,25 @@
 
 ## 本地运行
 
-需要 Python 3.8 或更新版本，无第三方依赖。
+需要 Python 3.8 或更新版本，运行时只用标准库。
 
 ```sh
-python3 app.py --open
+python3 app.py --open          # 随机端口
+python3 app.py --port 8787     # 固定端口，方便书签或嵌入
 ```
 
 macOS 也可双击 `start.command`。按 `Ctrl+C` 停止服务。
 
 - **本机网络**：由本地 Python 服务发起请求，线路取决于系统代理、环境变量和 VPN 设置。
 - **当前浏览器**：由浏览器发起请求，适合核对浏览器使用的代理。读取出口 IP 需要目标接口允许跨域访问。
+
+### 本地模式提示 TLS 证书验证失败
+
+python.org 的 macOS 安装包默认不信任系统根证书。脚本会自动尝试 `certifi` 和常见系统证书路径；若仍失败，可任选其一：
+
+- 运行 `/Applications/Python 3.x/Install Certificates.command`
+- `python3 -m pip install certifi`（脚本检测到会自动使用）
+- 设置 `SSL_CERT_FILE=/etc/ssl/cert.pem`
 
 ## GitHub Pages
 
