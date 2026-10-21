@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -25,7 +26,7 @@ GEO_CACHE_LOCK = threading.Lock()
 
 
 def valid_ip(value):
-    if not isinstance(value, str):
+    if not isinstance(value, str) or "%" in value:
         return None
     try:
         return str(ipaddress.ip_address(value.strip()))
@@ -54,7 +55,7 @@ def parse_result(body, method):
                 ip = valid_ip(value.get(key))
                 if ip:
                     return ip, country_code(value.get("country_code")) or country_code(value.get("country"))
-    except ValueError:
+    except (ValueError, RecursionError):
         pass
     return valid_ip(text), ""
 
@@ -63,7 +64,9 @@ class SameHostRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         old = urllib.parse.urlsplit(request.full_url)
         new = urllib.parse.urlsplit(newurl)
-        if new.scheme != "https" or new.hostname != old.hostname or new.port != old.port:
+        old_port = old.port if old.port is not None else 443
+        new_port = new.port if new.port is not None else 443
+        if new.scheme != "https" or new.hostname != old.hostname or new_port != old_port:
             raise urllib.error.HTTPError(newurl, 403, "Cross-domain redirect", headers, fp)
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
@@ -99,15 +102,17 @@ def probe(payload):
         raise ValueError("请输入有效的公开域名")
     if method not in ("trace", "echo", "ping0", "site"):
         raise ValueError("不支持的检测方式")
-    if len(path) > 512 or not path.startswith("/") or path.startswith("//") or re.search(r"[\\\s#]", path):
-        raise ValueError("路径须以 / 开头，且不能包含空白、反斜杠或 #")
+    if len(path) > 512 or not path.startswith("/") or path.startswith("//") or re.search(r"[\x00-\x1f\x7f\\\s#]", path):
+        raise ValueError("路径须以 / 开头，且不能包含空白、控制字符、反斜杠或 #")
     parts = urllib.parse.urlsplit("https://" + domain + path)
     if parts.hostname != domain or parts.scheme != "https":
         raise ValueError("检测地址必须属于所填域名")
-    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    # Keep existing escapes and query syntax intact (including signed URLs).
+    encoded_path = urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;=-._~")
+    query = urllib.parse.quote(parts.query, safe="/?%:@!$&'()*+,;=-._~")
     if method != "site":
-        query.append(("_split_probe", str(int(time.time() * 1000))))
-    url = urllib.parse.urlunsplit(("https", domain, parts.path, urllib.parse.urlencode(query), ""))
+        query += ("&" if query else "") + "_split_probe=" + str(int(time.time() * 1000))
+    url = urllib.parse.urlunsplit(("https", domain, encoded_path, query, ""))
     started = time.monotonic()
     request = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 SplitTunnelLab/1.1",
@@ -144,7 +149,9 @@ def probe(payload):
         return {"status": status, "message": message, "latency": round((time.monotonic() - started) * 1000)}
     except urllib.error.URLError as error:
         reason = error.reason
-        if isinstance(reason, (TimeoutError, socket.timeout)):
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            message = "TLS 证书验证失败，请检查 Python 证书或代理设置"
+        elif isinstance(reason, (TimeoutError, socket.timeout)):
             message = "连接超时"
         elif isinstance(reason, socket.gaierror):
             message = "域名解析失败"
@@ -184,7 +191,7 @@ def lookup_geo(value):
             ttl = 6 * 60 * 60
         else:
             result, ttl = {"status": "unavailable"}, 15 * 60
-    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, TypeError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, TypeError, RecursionError):
         result, ttl = {"status": "unavailable"}, 15 * 60
     with GEO_CACHE_LOCK:
         GEO_CACHE[ip] = (time.monotonic() + ttl, result)
@@ -226,6 +233,7 @@ class Handler(BaseHTTPRequestHandler):
             "/": ("index.html", "text/html; charset=utf-8"),
             "/static/style.css": ("style.css", "text/css; charset=utf-8"),
             "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/static/probe.mjs": ("probe.mjs", "text/javascript; charset=utf-8"),
         }
         item = files.get(urllib.parse.urlsplit(self.path).path)
         if not item:
@@ -251,8 +259,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("无效请求")
             result = probe(payload) if self.path == "/api/probe" else lookup_geo(payload.get("ip"))
             self.send_bytes(json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
-        except ValueError as error:
-            self.send_bytes(json.dumps({"error": str(error)}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 400)
+        except (ValueError, RecursionError) as error:
+            message = "JSON 嵌套过深" if isinstance(error, RecursionError) else str(error)
+            self.send_bytes(json.dumps({"error": message}, ensure_ascii=False).encode(), "application/json; charset=utf-8", 400)
 
 
 def main():

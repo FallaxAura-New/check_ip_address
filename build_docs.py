@@ -19,7 +19,7 @@ def main():
     html = html.replace('本地实验室', '公开版')
     html = html.replace('仅在本机运行', '浏览器直接检测')
     (DESTINATION / "index.html").write_text(html, encoding="utf-8")
-    for name in ("app.js", "style.css"):
+    for name in ("app.js", "style.css", "probe.mjs"):
         copyfile(SOURCE / name, DESTINATION / name)
     (DESTINATION / ".nojekyll").touch()
     print(f"GitHub Pages 站点已生成：{DESTINATION}")

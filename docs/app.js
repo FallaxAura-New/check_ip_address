@@ -1,3 +1,5 @@
+import { targetError, safeIp, countryCode, endpoint, browserProbe, fetchJson } from './probe.mjs';
+
 const presets = [
   {
     id: 'ipify',
@@ -358,7 +360,6 @@ const modeNotes = {
   browser: '由此浏览器直接请求。站点不允许跨域读取时，IP 无法显示。',
 };
 const storageKey = 'route-check-custom-v1';
-const hostnamePattern = /^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const rows = document.getElementById('results');
 const filters = document.getElementById('filters');
 const addPanel = document.getElementById('add-panel');
@@ -369,32 +370,12 @@ const countryNames =
 const hasLocalApi = document.body.dataset.hosted !== 'true';
 const geoCache = new Map();
 const activeChecks = new Map();
+let geoController = new AbortController();
 let custom = loadCustom();
 let results = new Map();
 let filter = 'all';
 let mode = hasLocalApi ? 'local' : 'browser';
 let runId = 0;
-
-function targetError({ domain, path, method }) {
-  if (
-    typeof domain !== 'string' ||
-    !hostnamePattern.test(domain) ||
-    /\.(local|localhost|internal)$/.test(domain)
-  ) {
-    return '请输入公开域名，不要包含路径。';
-  }
-  if (
-    typeof path !== 'string' ||
-    path.length > 512 ||
-    !path.startsWith('/') ||
-    path.startsWith('//') ||
-    /[\\#\s]/.test(path)
-  ) {
-    return '路径须以 / 开头，且不能包含空白、反斜杠或 #。';
-  }
-  if (!['trace', 'echo', 'site'].includes(method)) return '不支持的检测方式。';
-  return '';
-}
 
 function loadCustom() {
   try {
@@ -413,8 +394,8 @@ function loadCustom() {
         if (
           target.kind !== 'custom' ||
           typeof target.name !== 'string' ||
-          !target.name ||
-        target.name.length > 253 ||
+          !target.name.trim() ||
+          target.name.length > 253 ||
           targetError(target)
         )
           return false;
@@ -440,64 +421,6 @@ function targets() {
   return [...presets, ...custom];
 }
 
-function safeIp(value) {
-  if (typeof value !== 'string') return '';
-  const ip = value.trim();
-  if (/^(?:(?:0|[1-9]\d{0,2})\.){3}(?:0|[1-9]\d{0,2})$/.test(ip) && ip.split('.').every((n) => +n <= 255))
-    return ip;
-  if (ip.includes(':') && /^[\da-f:.]+$/i.test(ip)) {
-    try {
-      return new URL(`http://[${ip}]/`).hostname.slice(1, -1);
-    } catch {
-      /* Invalid IPv6. */
-    }
-  }
-  return '';
-}
-
-function countryCode(value) {
-  return typeof value === 'string' && /^[a-z]{2}$/i.test(value) ? value.toUpperCase() : '';
-}
-
-function parseResponse(text, method) {
-  if (method === 'ping0') {
-    const lines = text
-      .trim()
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return {
-      ip: safeIp(lines[0]),
-      country: '',
-      location: (lines[1] || '').slice(0, 160),
-      locationSource: 'ping0.cc',
-    };
-  }
-  if (method === 'trace') {
-    const pairs = Object.fromEntries(
-      text
-        .split(/\r?\n/)
-        .filter((x) => x.includes('='))
-        .map((x) => [x.slice(0, x.indexOf('=')), x.slice(x.indexOf('=') + 1)]),
-    );
-    return { ip: safeIp(pairs.ip), country: countryCode(pairs.loc) };
-  }
-  try {
-    const value = JSON.parse(text);
-    if (value && typeof value === 'object') {
-      for (const key of ['ip', 'ip_address', 'address', 'query']) {
-        const ip = safeIp(value[key]);
-        if (ip) return { ip, country: countryCode(value.country_code) || countryCode(value.country) };
-      }
-    }
-  } catch {
-    /* plain text endpoint */
-  }
-  return { ip: safeIp(text), country: '' };
-}
-function endpoint(target) {
-  return `https://${target.domain}${target.path}`;
-}
 function initials(target) {
   if (/^[\u4e00-\u9fff]/.test(target.name)) return target.name.slice(0, 1);
   return target.name
@@ -582,6 +505,10 @@ function copyButton(label, value) {
 }
 
 function renderRows() {
+  const focused = rows.contains(document.activeElement) ? {
+    id: document.activeElement.closest('tr')?.dataset.targetId,
+    action: document.activeElement.dataset.action,
+  } : null;
   const visible = visibleTargets();
   rows.replaceChildren();
   document.getElementById('empty-state').hidden = visible.length !== 0;
@@ -589,6 +516,7 @@ function renderRows() {
   for (const target of visible) {
     const result = results.get(target.id);
     const tr = document.createElement('tr');
+    tr.dataset.targetId = target.id;
     const site = cell(null);
     const main = document.createElement('div');
     main.className = 'site-main';
@@ -658,13 +586,16 @@ function renderRows() {
     const actionsCell = cell(null);
     const actions = document.createElement('div');
     actions.className = 'row-actions';
-    actions.append(
-      copyButton(
-        result?.status === 'ok' ? '复制 IP' : '复制域名',
-        result?.status === 'ok' ? result.ip : target.domain,
-      ),
-    );
+    const copyDomain = copyButton('复制域名', target.domain);
+    copyDomain.dataset.action = 'copy-domain';
+    actions.append(copyDomain);
+    if (result?.status === 'ok') {
+      const copyIp = copyButton('复制 IP', result.ip);
+      copyIp.dataset.action = 'copy-ip';
+      actions.append(copyIp);
+    }
     const retry = actionButton('重测', () => runOne(target));
+    retry.dataset.action = 'retry';
     retry.disabled = result?.status === 'loading' || result?.geoLoading === true;
     actions.append(retry);
     const raw = document.createElement('a');
@@ -672,26 +603,35 @@ function renderRows() {
     raw.target = '_blank';
     raw.rel = 'noopener noreferrer';
     raw.textContent = '浏览器核对 ↗';
+    raw.dataset.action = 'open';
     raw.title = '在新标签页打开目标接口，查看浏览器收到的原始响应';
     actions.append(raw);
-    if (target.kind === 'custom')
-      actions.append(
-        actionButton(
-          '删除',
-          () => {
-            custom = custom.filter((x) => x.id !== target.id);
-            saveCustom();
-            activeChecks.delete(target.id);
-            results.delete(target.id);
-            renderRows();
-            updateSummary();
-          },
-          'remove',
-        ),
+    if (target.kind === 'custom') {
+      const remove = actionButton(
+        '删除',
+        () => {
+          custom = custom.filter((x) => x.id !== target.id);
+          saveCustom();
+          activeChecks.get(target.id)?.abort();
+          activeChecks.delete(target.id);
+          results.delete(target.id);
+          renderRows();
+          updateSummary();
+        },
+        'remove',
       );
+      remove.dataset.action = 'remove';
+      actions.append(remove);
+    }
     actionsCell.append(actions);
     tr.append(actionsCell);
     rows.append(tr);
+  }
+  if (focused?.action) {
+    const row = [...rows.children].find((item) => item.dataset.targetId === focused.id);
+    const action = [...(row?.querySelectorAll('[data-action]') || [])]
+      .find((item) => item.dataset.action === focused.action);
+    if (action && !action.disabled) action.focus({ preventScroll: true });
   }
 }
 function updateSummary() {
@@ -714,78 +654,27 @@ function updateSummary() {
   runButton.disabled = pending > 0;
 }
 
-async function fetchJson(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function localProbe(target) {
+async function localProbe(target, signal) {
   return fetchJson('/api/probe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ domain: target.domain, method: target.method, path: target.path }),
+    signal,
   });
 }
-async function browserProbe(target) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8500);
-  const start = performance.now();
-  try {
-    const url = new URL(endpoint(target));
-    if (target.method !== 'site') url.searchParams.set('_split_probe', String(Date.now()));
-    const response = await fetch(url, {
-      mode: target.method === 'site' ? 'no-cors' : 'cors',
-      credentials: 'omit',
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    const latency = Math.round(performance.now() - start);
-    if (target.method === 'site') {
-      controller.abort();
-      return {
-        status: 'responded',
-        message: '已收到响应（可能经过跳转）',
-        latency,
-      };
-    }
-    if (new URL(response.url).hostname !== target.domain)
-      return { status: 'unsupported', message: '目标跳转到了其他域名，无法归属 IP', latency };
-    if (!response.ok)
-      return response.status >= 400 && response.status < 500
-        ? { status: 'unsupported', message: `站点未提供检测接口（HTTP ${response.status}）`, latency }
-        : { status: 'error', message: `站点返回 HTTP ${response.status}`, latency };
-    const text = (await response.text()).slice(0, 32768);
-    const parsed = parseResponse(text, target.method);
-    return parsed.ip
-      ? { status: 'ok', ...parsed, latency }
-      : { status: 'unsupported', message: '响应中未找到有效 IP', latency };
-  } catch (error) {
-    return {
-      status: 'error',
-      message: error.name === 'AbortError' ? '连接超时' : '浏览器无法读取（跨域限制或连接失败）',
-      latency: Math.round(performance.now() - start),
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-async function lookupGeo(ip) {
+async function lookupGeo(ip, signal) {
   try {
     if (hasLocalApi) {
       return await fetchJson('/api/geo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip }),
+        signal,
       });
     }
-    const data = await fetchJson(`https://ipwho.is/${encodeURIComponent(ip)}`, { credentials: 'omit' });
+    const data = await fetchJson(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+      credentials: 'omit', referrerPolicy: 'no-referrer', signal,
+    });
     if (data?.success === true && safeIp(data.ip) === ip) {
       return {
         status: 'ok',
@@ -802,21 +691,29 @@ async function lookupGeo(ip) {
 }
 
 function geoForIp(ip) {
-  if (!geoCache.has(ip)) geoCache.set(ip, lookupGeo(ip));
+  if (!geoCache.has(ip)) {
+    const lookup = lookupGeo(ip, geoController.signal).then((result) => {
+      // Coalesce concurrent lookups, but let a later retry recover from a failure.
+      if (result.status !== 'ok' && geoCache.get(ip) === lookup) geoCache.delete(ip);
+      return result;
+    });
+    geoCache.set(ip, lookup);
+  }
   return geoCache.get(ip);
 }
 
 async function runOne(target, token = runId) {
   if (token !== runId || !targets().some((x) => x.id === target.id)) return;
-  const check = Symbol();
+  activeChecks.get(target.id)?.abort();
+  const check = new AbortController();
   activeChecks.set(target.id, check);
-  const isCurrent = () => token === runId && activeChecks.get(target.id) === check;
+  const isCurrent = () => token === runId && !check.signal.aborted && activeChecks.get(target.id) === check;
   results.set(target.id, { status: 'loading' });
   renderRows();
   updateSummary();
   let result;
   try {
-    result = await (mode === 'local' ? localProbe(target) : browserProbe(target));
+    result = await (mode === 'local' ? localProbe(target, check.signal) : browserProbe(target, check.signal));
   } catch (error) {
     result = {
       status: 'error',
@@ -840,7 +737,11 @@ async function runOne(target, token = runId) {
 
 async function runAll() {
   const token = ++runId;
+  for (const check of activeChecks.values()) check.abort();
   activeChecks.clear();
+  geoController.abort();
+  geoController = new AbortController();
+  geoCache.clear();
   const list = targets();
   results = new Map(list.map((target) => [target.id, { status: 'loading' }]));
   renderRows();
@@ -854,6 +755,16 @@ async function runAll() {
   }
   await Promise.all(Array.from({ length: Math.min(6, list.length) }, worker));
 }
+
+window.addEventListener('pagehide', () => {
+  runId++;
+  for (const check of activeChecks.values()) check.abort();
+  activeChecks.clear();
+  geoController.abort();
+});
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) runAll();
+});
 
 document.querySelectorAll('input[name="mode"]').forEach((input) =>
   input.addEventListener('change', () => {
